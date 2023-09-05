@@ -1,0 +1,12 @@
+{
+  "name": "roblox-blender-animations-fork",
+  "tree": {
+    "$className": "DataModel",
+
+    "ServerScriptService": {
+      "RobloxBlenderAnimationsFork": {
+        "$path": "src"
+      }
+    }
+  }
+}
