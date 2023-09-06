@@ -1,146 +1,301 @@
--- Rbx Animations plugin, export/import between Blender and Roblox
--- Written by Den_S/@DennisRBLX
+local HttpService = game:GetService("HttpService")
+local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
+local PluginGuiService = game:GetService("PluginGuiService")
+local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
 
-local KSP = game:GetService("KeyframeSequenceProvider")
-local RS = game:GetService("RunService")
-local Rig = require(script.Rig)
 local BaseXX = require(script.BaseXX)
 local DeflateLua = require(script.DeflateLua)
+local Rig = require(script.Rig)
 
-local activeRigModel = nil
-local activeAnimator = nil
-local activeRig = nil
-local activeAnimTrack = nil
-local active = false
+local COLORS = {
+	BACKGROUND = Color3.fromRGB(15, 15, 19),
 
-local gui = script.PluginGui:Clone()
-gui.Archivable = false
-local guiHintLabel = gui.HintMessage
-local guiHintLabelShowTime = 0
-local metaParts
-local importScript
-local rigSelectionEvent
-local activateButton
-local updateAnimationOptionsGui
-local keyframeNameTemplate = script.KeyframeNameTemplate
-keyframeNameTemplate.Parent = nil
-local keyframeNamesContainer
-local addRigLoadingMessage
-local clearRigLoadingMessages
-local boneWeightsList
+	DEFAULT = Color3.fromRGB(64, 66, 88),
+	ACCENTED = Color3.fromRGB(71, 78, 104),
 
-local CollapsibleTitledSection = require(script.Parent.StudioWidgets.CollapsibleTitledSection)
-local CustomTextButton = require(script.Parent.StudioWidgets.CustomTextButton)
-local VerticallyScalingListFrame = require(script.Parent.StudioWidgets.VerticallyScalingListFrame)
-local LabeledCheckbox = require(script.Parent.StudioWidgets.LabeledCheckbox)
-local GuiUtilities = require(script.Parent.StudioWidgets.GuiUtilities)
+	WHITE = Color3.fromRGB(255, 255, 255),
+	TEXT = Color3.fromRGB(191, 191, 191),
+	SECONDARY_TEXT = Color3.fromRGB(107, 114, 142),
 
-local dockGui = plugin:CreateDockWidgetPluginGui(
-	"RbxAnimations_Dock",
-	DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Left, false, true, 400, 600)
+	ERROR = Color3.fromRGB(233, 102, 160),
+	WARNING = Color3.fromRGB(255, 165, 89),
+	BUTTON = Color3.fromRGB(149, 117, 222),
+	BUTTON_DEPRESSED = Color3.fromRGB(101, 84, 175)
+}
+
+local APP_NAME = "Roblox Blender Animation Tool"
+local APP_VERSION = "0.1"
+
+
+local WARNING_COUNT = "(%d warnings)"
+local WARNING_EXPORT_MERGE_BY_MATERIAL = "WARN: ExportMergeByMaterial should be disabled!"
+local WARNING_EXPORT_MERGE_BY_MATERIAL_HINT = "► Disable this in Settings > Rendering"
+local WARNING_NON_ALPHANUMERIC = "WARN: Non-alphanumeric characters in object name!"
+local WARNING_NON_ALPHANUMERIC_HINT = "► Rename the object to only contain a-z, A-Z, and 0-9."
+local WARNING_DECAL = "WARN: Decal found!\nDecals could cause issues with exporting."
+local WARNING_DECAL_HINT = "► ...%s"
+local WARNING_TEXTURE = "WARN: Texture found!\nTextures could cause issues with exporting."
+local WARNING_TEXTURE_HINT = "► ...%s"
+
+local HEADER_FONT = Font.fromEnum(Enum.Font.Ubuntu)
+HEADER_FONT.Weight = Enum.FontWeight.Bold
+local DEFAULT_FONT = Font.fromEnum(Enum.Font.Ubuntu)
+DEFAULT_FONT.Weight = Enum.FontWeight.Regular
+
+local ToolbarButton: PluginToolbarButton
+
+local RigSelectionEvent: RBXScriptConnection?
+local HintDissapearThread: thread
+
+local ActiveRig: Rig.Type?
+local ActiveRigModel: Model?
+local ActiveAnimator: Humanoid | AnimationController
+local ActiveAnimationTrack: AnimationTrack?
+
+local ActionEditorExportedName: string?
+
+local PotentialIssues = {}
+local MetadataParts = {}
+
+local Active = false
+
+local DockGui = plugin:CreateDockWidgetPluginGui(
+	APP_NAME,
+	DockWidgetPluginGuiInfo.new(
+		Enum.InitialDockState.Float,
+		true,
+		false,
+		400,
+		600
+	)
 )
-dockGui.Title = "Blender Animations"
-local dockGuiPreviousEnabled = false
+DockGui.Title = APP_NAME
+DockGui.Enabled = false
+local DockGuiPreviouslyEnabled = false
 
-local scrollingFrame = Instance.new("ScrollingFrame")
-scrollingFrame.Parent = dockGui
-scrollingFrame.BorderSizePixel = 0
-scrollingFrame.BackgroundColor3 = Color3.new(1, 1, 1)
-scrollingFrame.BottomImage = "rbxasset://textures/ui/scrollbuttonDown.png"
-scrollingFrame.MidImage = "rbxasset://textures/ui/scrollbar.png"
-scrollingFrame.TopImage = "rbxasset://textures/ui/scrollbuttonUp.png"
-scrollingFrame.Size = UDim2.new(1, 0, 1, 0)
-scrollingFrame.ScrollBarThickness = 16
-
-local scrollingFramePadding = Instance.new("UIPadding")
-scrollingFramePadding.PaddingRight = UDim.new(0, 16)
-scrollingFramePadding.Parent = scrollingFrame
-
-local mainList = VerticallyScalingListFrame.new("Root")
-mainList:GetFrame().Parent = scrollingFrame
-mainList:GetFrame():GetPropertyChangedSignal("Size"):connect(function()
-	scrollingFrame.CanvasSize = mainList:GetFrame().Size
-	scrollingFramePadding.PaddingRight =
-		UDim.new(0, scrollingFrame.AbsoluteWindowSize.Y < scrollingFrame.CanvasSize.Y.Offset and 16 or 0)
-end)
-
-scrollingFrame:GetPropertyChangedSignal("AbsoluteSize"):connect(function()
-	scrollingFramePadding.PaddingRight =
-		UDim.new(0, scrollingFrame.AbsoluteWindowSize.Y < scrollingFrame.CanvasSize.Y.Offset and 16 or 0)
-end)
-
-local buttonSize = UDim2.new(1, 0, 0, 30)
-local padding = 5
-
-local function clearMetaParts()
-	if metaParts then
-		for _, metaPart in pairs(metaParts) do
-			metaPart:Destroy()
+local function FastInstance(className, properties)
+	local instance = Instance.new(className)
+	for key, value in pairs(properties) do
+		if key == "Parent" then
+			continue
 		end
-		metaParts = nil
+		instance[key] = value
+	end
+	if properties.Parent then
+		instance.Parent = properties.Parent
+	end
+	return instance
+end
+
+local function TruncatedFullName(parent, child)
+	local fullName = child:GetFullName()
+	local parentFullName = parent:GetFullName()
+	-- should look like "RigName.ChildName" instead of "game.Workspace.RigName.ChildName"
+	return parent.Name .. "." .. fullName:sub(#parentFullName + 2)
+end
+
+local InViewportGui = FastInstance("ScreenGui", {
+	Name = APP_NAME,
+	ResetOnSpawn = false,
+	DisplayOrder = 1000,
+})
+local InViewportHint = FastInstance("TextLabel", {
+	Name = "Hint",
+	Text = "This is a hint.",
+	TextColor3 = Color3.new(1, 1, 1),
+	TextStrokeColor3 = Color3.new(0, 0, 0),
+	TextStrokeTransparency = 0,
+	TextSize = 24,
+	BackgroundTransparency = 1,
+	Size = UDim2.new(1, 0, 1, 0),
+	Position = UDim2.new(0.5, 0, 0.5, 0),
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Parent = InViewportGui,
+})
+
+local ScrollingFrame = FastInstance("ScrollingFrame", {
+	Name = "ScrollingFrame",
+	BackgroundColor3 = COLORS.BACKGROUND,
+
+	Position = UDim2.new(0, 0, 0, 0),
+	Size = UDim2.new(1, 0, 1, 0),
+
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+	CanvasSize = UDim2.new(0, 0, 0, 0),
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+	ScrollBarThickness = 2,
+
+	Parent = DockGui,
+})
+local Separator = FastInstance("UIListLayout", {
+	Name = "Separator",
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 4),
+	Parent = ScrollingFrame,
+})
+local Padding = FastInstance("UIPadding", {
+	Name = "Padding",
+	PaddingLeft = UDim.new(0, 12),
+	PaddingRight = UDim.new(0, 12),
+	PaddingTop = UDim.new(0, 24),
+	PaddingBottom = UDim.new(0, 24),
+	Parent = ScrollingFrame,
+})
+
+local function Header()
+	return FastInstance("TextLabel", {
+		BackgroundTransparency = 1,
+		TextColor3 = COLORS.WHITE,
+		FontFace = HEADER_FONT,
+		TextSize = 24,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+
+		Size = UDim2.new(1, 0, 0, 24),
+	})
+end
+
+local function TextLabel()
+	return FastInstance("TextLabel", {
+		BackgroundTransparency = 1,
+		TextColor3 = COLORS.TEXT,
+		FontFace = DEFAULT_FONT,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+
+		Size = UDim2.new(1, 0, 0, 16),
+	})
+end
+
+local function TextButton()
+	local Inst: TextButton = FastInstance("TextButton", {
+		BackgroundColor3 = COLORS.BUTTON,
+		TextColor3 = COLORS.WHITE,
+		FontFace = DEFAULT_FONT,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		AutoButtonColor = false,
+
+		Size = UDim2.new(1, 0, 0, 32),
+	})
+
+	Inst.MouseEnter:Connect(function()
+		Inst.BackgroundColor3 = COLORS.BUTTON_DEPRESSED
+	end)
+
+	return Inst
+end
+
+local function Print(...)
+	print(`[{APP_NAME} v{APP_VERSION}]`, ...)
+end
+
+local function ShowHint(text, ...)
+	InViewportHint.Text = text
+	InViewportHint.Visible = true
+	if HintDissapearThread then
+		task.cancel(HintDissapearThread)
+	end
+	HintDissapearThread = coroutine.wrap(function()
+		task.wait(3)
+		InViewportHint.Visible = false
+	end)()
+end
+
+
+
+local function ClearMetadataParts()
+	if #MetadataParts > 0 then
+		for _, part in ipairs(MetadataParts) do
+			part:Destroy()
+		end
+		table.clear(MetadataParts)
 	end
 end
 
-local function stopAnimation()
-	if activeAnimTrack then
-		activeAnimTrack:Stop(0.001)
-		activeAnimTrack:Destroy()
-		activeAnimTrack = nil
+local function StopAnimation()
+	if ActiveAnimationTrack then
+		ActiveAnimationTrack:Stop(0.001)
+		ActiveAnimationTrack:Destroy()
+		ActiveAnimationTrack = nil
 	end
 end
 
-local function showHint(text, ...)
-	local showTime = tick()
-	guiHintLabel.Visible = true
-	guiHintLabel.Text = text:format(...)
-	guiHintLabelShowTime = showTime
 
-	spawn(function()
-		wait(2)
-		if guiHintLabelShowTime == showTime then
-			guiHintLabel.Visible = false
-		end
-	end)
+
+
+-- why did bro name it like this while being completely irrelevant from what's being done
+local function LoadRig()
+	StopAnimation()
+
+	if not ActiveRig then
+		ShowHint("No rig selected.")
+		return
+	end
+	if not ActiveAnimator then
+		ShowHint("No animator found.")
+		return
+	end
+
+	local KeyframeSequence = ActiveRig:ToKeyframeSequence()
+	local Hash = KeyframeSequenceProvider:RegisterKeyframeSequence(KeyframeSequence)
+
+	local Animation = Instance.new("Animation")
+	Animation.AnimationId = Hash
+
+	-- why type error??? Humanoid and AnimationController HAVE a LoadAnimation method
+	-- i would cast it but meh there should be an Animator inside them anyways
+	local Animator = ActiveAnimator:FindFirstChildOfClass("Animator")
+	if not Animator then
+		ShowHint("No animator found.")
+		return
+	end
+	ActiveAnimationTrack = Animator:LoadAnimation(Animation)
+	if not ActiveAnimationTrack then
+		ShowHint("Failed to load animation.")
+		return
+	end -- grrrrrr static analysis
+	ActiveAnimationTrack:Play(0.001)
 end
 
-local function loadRig()
-	stopAnimation()
-
-	local kfs = activeRig:ToRobloxAnimation()
-	local asset = KSP:RegisterKeyframeSequence(kfs)
-
-	local animation = Instance.new("Animation")
-	animation.AnimationId = asset
-
-	activeAnimTrack = activeAnimator:LoadAnimation(animation)
-	activeAnimTrack.KeyframeReached:connect(function(kfName)
-		print(('Playing animation reached keyframe "%s"'):format(kfName))
-	end)
-	activeAnimTrack:Play(0)
-
-	--[[for _, kf in pairs(kfs:GetChildren()) do
-		local tr = kf.HumanoidRootPart.Ax1.CFrame;
-		activeRigModel.Axle1.PrimaryPart.CFrame = tr;
-		game["Run Service"].RenderStepped:wait();
-		game["Run Service"].RenderStepped:wait();
-	end]]
-end
-
-local function uploadAnimation()
+local function UploadAnimation()
 	-- should be cleaned up at some point, but no proper way to detect that?
-	local kfs = activeRig:ToRobloxAnimation()
-	kfs.Parent = game.Workspace
-	game.Selection:Set({ kfs })
+	assert(ActiveRig)
+	assert(ActiveRigModel)
+	assert(ActionEditorExportedName)
+	local KeyframeSequence = ActiveRig:ToRobloxAnimation()
+	local Folder = workspace:FindFirstChild("AnimationExports") or Instance.new("Folder")
+	Folder.Name = "AnimationExports"
+	Folder.Parent = workspace
+	KeyframeSequence.Name = ActiveRigModel.Name .. "_" .. ActionEditorExportedName
+	KeyframeSequence.Parent = Folder
+	Selection:Set({ KeyframeSequence })
 	plugin:SaveSelectedToRoblox()
 end
 
--- reencodes a joint s.t. it can be serialized to json properly
-local function reencodeJointMetadata(rigNode, partEncodeMap)
+local function ExportAnimation()
+	assert(ActiveRig)
+	assert(ActiveRigModel)
+	assert(ActionEditorExportedName)
+	local KeyframeSequence = ActiveRig:ToRobloxAnimation()
+	local Folder = workspace:FindFirstChild("AnimationExports") or Instance.new("Folder")
+	Folder.Name = "AnimationExports"
+	Folder.Parent = workspace
+	KeyframeSequence.Name = ActiveRigModel.Name .. "_" .. ActionEditorExportedName
+	KeyframeSequence.Parent = Folder
+	Selection:Set({ KeyframeSequence })
+end
+
+-- ok i have no expertise with these but i'll copy it 1:1
+local function ReencodeJointMetadata(rigNode, partEncodeMap)
 	-- round transform matrices (compresses data)
 	for _, transform in pairs({ "transform", "jointtransform0", "jointtransform1" }) do
 		if rigNode[transform] then
 			for i = 1, #rigNode[transform] do
-				rigNode[transform][i] = math.floor(rigNode[transform][i] * 10000 + 0.5) / 10000
+				rigNode[transform][i] = math.floor(rigNode[transform][i] * 10000 + 0.5) / 10000 -- no idea what this does
 			end
 		end
 	end
@@ -148,582 +303,359 @@ local function reencodeJointMetadata(rigNode, partEncodeMap)
 	rigNode.pname = partEncodeMap[rigNode.inst]
 	rigNode.inst = nil
 	local realAux = rigNode.aux
-	rigNode.aux = {} -- named aux
+	rigNode.aux = {}
 
 	for _, aux in pairs(realAux) do
-		rigNode.aux[#rigNode.aux + 1] = partEncodeMap[aux]
+		table.insert(rigNode.aux, partEncodeMap[aux])
 	end
 
 	for _, child in pairs(rigNode.children) do
-		reencodeJointMetadata(child, partEncodeMap)
+		ReencodeJointMetadata(child, partEncodeMap)
 	end
 end
 
+-- no idea for this too, so copy again lol
 -- serializes the neutral rig state to a table that can be serialized to json safely
 -- normalized the model part names as well
-local function generateMetadata(rigModelToExport)
-	assert(activeRig)
+local function GenerateMetadata(rigModelToExport)
+	assert(ActiveRig)
 
-	local partNames = {}
-	local partEncodeMap = {}
+	local PartNames = {}
+	local PartEncodeMap = {}
+	local UsedModelNames = {}
+	local PartCount = 0
 
-	local usedModelNames = {}
-	local partCount = 0
-
-	local originalDescendants = activeRig.model:GetDescendants()
-	for descIdx, desc in ipairs(rigModelToExport:GetDescendants()) do
+	local OriginalDescendants = ActiveRig.model:GetDescendants()
+	for descIDx, desc in ipairs(rigModelToExport:GetDescendants()) do
 		if desc:IsA("BasePart") then
-			partCount = partCount + 1
+			PartCount += 1
 
 			-- uniqify the name
-			local baseName = desc.Name
-			local retryCount = 0
-			while usedModelNames[desc.Name] do
-				retryCount = retryCount + 1
-				desc.Name = baseName .. retryCount
+			local Name = desc.Name
+			local RetryCount = 0
+			while UsedModelNames[Name] do
+				RetryCount += 1
+				desc.Name = Name .. RetryCount
 			end
 
-			usedModelNames[desc.Name] = true
-			partNames[#partNames + 1] = desc.Name
-			partEncodeMap[originalDescendants[descIdx]] = desc.Name
-			desc.Name = rigModelToExport.Name .. partCount
+			UsedModelNames[desc.Name] = true
+			table.insert(PartNames, desc.Name)
+			PartEncodeMap[OriginalDescendants[descIDx]] = desc.Name
+			desc.Name = rigModelToExport.Name .. PartCount
 		elseif desc:IsA("Humanoid") then
 			-- Get rid of all humanoids so that they do not affect naming...
+			-- what for??
 			desc:Destroy()
 		end
 	end
 
-	local encodedRig = activeRig:EncodeRig()
-	reencodeJointMetadata(encodedRig, partEncodeMap)
+	local EncodedRig = ActiveRig:EncodeRig()
+	ReencodeJointMetadata(EncodedRig, PartEncodeMap)
 
-	return { rigName = activeRig.model.Name, parts = partNames, rig = encodedRig }
+	return {
+		rigName = ActiveRig.model.Name,
+		parts = PartNames,
+		rig = EncodedRig,
+	}
 end
 
--- serialized rig, triggers export dialog for the rig
-local function exportRig()
-	assert(activeRig)
+-- again, no idea what this does
+local function ExportRig()
+	assert(ActiveRig)
+	assert(ActiveRigModel) -- this isn't added in the original plugin, but static analysis is complaining so i'll add it
 
-	clearMetaParts()
+	ClearMetadataParts()
 
 	-- Clone the rig model, then rename all baseparts to the rig name (let the export flow handle unique indices)
-	local rigModelToExport = activeRigModel:Clone()
-	rigModelToExport.Parent = activeRigModel.Parent
-	rigModelToExport.Archivable = false
+	local RigModelToExport = ActiveRigModel:Clone()
+	RigModelToExport.Parent = ActiveRigModel.Parent
+	RigModelToExport.Archivable = false
 
-	metaParts = { rigModelToExport }
+	MetadataParts = { RigModelToExport }
 
-	local meta = generateMetadata(rigModelToExport)
+	local Metadata = GenerateMetadata(RigModelToExport)
 
 	-- store encoded metadata in a bunch of auxiliary part names
-	local metaEncodedJson = game.HttpService:JSONEncode(meta)
-	local metaEncoded = BaseXX.to_base32(metaEncodedJson):gsub("=", "0")
-	local idx = 1
-	local segLen = 45
-	for begin = 1, #metaEncoded + 1, segLen do
-		local metaPart = Instance.new("Part", game.Workspace)
-		metaPart.Name = ("meta%dq1%sq1"):format(idx, metaEncoded:sub(begin, begin + segLen - 1))
-		metaParts[#metaParts + 1] = metaPart
-		metaPart.Anchored = true
-		metaPart.Archivable = false
-		idx = idx + 1
+	-- what is auxiliary part names?? WHAT is this witchcraft
+	local MetadataEncodedJson = HttpService:JSONEncode(Metadata)
+	local MetadataEncoded = BaseXX.to_base32(MetadataEncodedJson):gsub("=", "0")
+	local IDx = 1
+	local SegmentLength = 45 -- oooooooo scary magic number
+	for i = 1, #MetadataEncoded + 1, SegmentLength do
+		local MetadataPart = Instance.new("Part")
+		MetadataPart.Name = ("meta%dq1%sq1"):format(IDx, MetadataEncoded:sub(i, i + SegmentLength - 1))
+		MetadataPart.Anchored = true
+		MetadataPart.Archivable = false
+		table.insert(MetadataParts, MetadataPart)
+		IDx += 1
 	end
-	game.Selection:Set(metaParts)
+	Selection:Set(MetadataParts)
 	PluginManager():ExportSelection() -- hah deprecated
+	-- yeah... deprecated, dont care it works and i have no idea what to do with it
 end
 
--- given encoded rig data, decodes it and loads the animation
-local function loadAnim(data)
-	local animDataEncoded = BaseXX.from_base64(data)
-	local unpackSeq = {}
-	local unpackSeqIdx = 1
+local function LoadAnimation(data)
+	if not ActiveRig then
+		ShowHint("No rig selected.")
+		return
+	end
+
+	local AnimationData = BaseXX.from_base64(data)
+	local UnpackedSequence = {}
+	local UnpackedSequenceIDx = 1 -- what is IDx??
+
 	DeflateLua.inflate_zlib({
 		disable_crc = true,
-		input = animDataEncoded,
+		input = AnimationData,
 		output = function(streamByte)
-			unpackSeq[unpackSeqIdx] = string.char(streamByte)
-			unpackSeqIdx = unpackSeqIdx + 1
-		end,
-	})
-	local animDataEncodedJson = table.concat(unpackSeq, "")
-	local animData = game.HttpService:JSONDecode(animDataEncodedJson)
+			UnpackedSequence[UnpackedSequenceIDx] = streamByte
+			UnpackedSequenceIDx += 1
+		end
+	}) -- is this extreme nerd math that i don't understand? probably! who knows, im just remaking the plugin
 
-	activeRig:LoadAnimation(animData)
+	local UnpackedSequenceString = table.concat(UnpackedSequence, "")
+	local UnpackedSequenceTable = HttpService:JSONDecode(UnpackedSequenceString)
+
+	ActionEditorExportedName = UnpackedSequenceTable["anim_name"] or "Untitled"
+	Print("Your Action name (from Blender Action Editor) is:", ActionEditorExportedName)
+
+	ActiveRig:LoadAnimation(UnpackedSequenceTable)
 end
 
-local function previewAnimationAsRobloxAnim()
-	loadRig()
+local function LoadAnimationDataFromText(data)
+	local success, result = pcall(LoadAnimation, data)
+	if not success then
+		ShowHint("Failed to load animation data.")
+		Print("Failed to load animation data.")
+		Print(result)
+	else
+		ShowHint("Loaded animation data.")
+		Print("Loaded animation data.")
+	end
 end
 
--- TODO
-local function recollectKeyframeNames()
-	local pos = keyframeNameTemplate.Position
-	local kfdefs = {}
-	for _, kfnui in pairs(keyframeNamesContainer:GetChildren()) do
-		if kfnui.Name == "KeyframeNameTemplate" then
-			kfnui.Position = pos
-			pos = pos + UDim2.new(0, 0, 0, 35)
+local function CheckForPotentialIssues()
+	table.clear(PotentialIssues)
+	local WarningCount = 0
 
-			local t = tonumber(kfnui.KfTime.Text)
-			-- anything with this t already exists?
-			for _, kfdef in pairs(kfdefs) do
-				if kfdef.t == t then
-					t = nil
-					break
-				end
+	if not ActiveRigModel then
+		table.insert(PotentialIssues, "No rig selected.")
+	else
+		if settings().Rendering.ExportMergeByMaterial then
+			table.insert(PotentialIssues, WARNING_EXPORT_MERGE_BY_MATERIAL)
+			table.insert(PotentialIssues, WARNING_EXPORT_MERGE_BY_MATERIAL_HINT)
+		end
+
+		if ActiveRigModel.Name:match("[^a-zA-Z0-9]") then
+			table.insert(PotentialIssues, WARNING_NON_ALPHANUMERIC)
+			table.insert(PotentialIssues, WARNING_NON_ALPHANUMERIC_HINT)
+		end
+
+		for _, descendant in ActiveRigModel:GetDescendants() do
+			if descendant:IsA("Decal") then
+				table.insert(PotentialIssues, WARNING_DECAL)
+				table.insert(PotentialIssues, WARNING_DECAL_HINT:format(TruncatedFullName(ActiveRigModel, descendant)))
+			elseif descendant:IsA("Texture") then
+				table.insert(PotentialIssues, WARNING_TEXTURE)
+				table.insert(PotentialIssues, WARNING_TEXTURE_HINT:format(TruncatedFullName(ActiveRigModel, descendant)))
 			end
-			-- convert
-			if t then
-				kfdefs[#kfdefs + 1] = { t = t, name = kfnui.KfName.Text }
-				kfnui.KfTime.BackgroundColor3 = keyframeNameTemplate.KfTime.BackgroundColor3
-			else
-				kfnui.KfTime.BackgroundColor3 = Color3.new(1, 0.2, 0.2)
-			end
 		end
 	end
-	table.sort(kfdefs, function(a, b)
-		return a.t < b.t
-	end)
-	activeRig.keyframeNames = kfdefs
-	loadRig()
+
+	table.insert(PotentialIssues, WARNING_COUNT:format(WarningCount))
+	if #PotentialIssues > 0 then
+		for _, issue in ipairs(PotentialIssues) do
+			Print(issue)
+		end
+		Print("Fix all issues before exporting.")
+	else
+		Print("No issues found.")
+	end
 end
 
--- TODO
-local function clearKeyframeNames()
-	for _, kfnui in pairs(keyframeNamesContainer:GetChildren()) do
-		if kfnui.Name == "KeyframeNameTemplate" then
-			kfnui:Destroy()
-		end
-	end
-	recollectKeyframeNames()
-end
-
--- loads a rig model
-local function setRig(rigModel)
-	assert(rigModel)
-
-	if not rigModel.PrimaryPart then
-		showHint("Rig has no PrimaryPart set.")
+local function SetRig(rig)
+	if not rig then
+		ShowHint("Nothing selected.")
 		return false
 	end
 
-	if not rigModel.PrimaryPart.Anchored then
-		showHint("Rig PrimaryPart must be anchored when creating animations.")
+	if not rig:IsA("Model") then
+		ShowHint("Selected object is not a model.")
 		return false
 	end
 
-	activeRigModel = rigModel
-	activeAnimator = rigModel:FindFirstChildOfClass("Humanoid") or rigModel:FindFirstChildOfClass("AnimationController")
-	if not activeAnimator then
-		showHint("Invalid rig, no Humanoid or AnimationController exists.")
-		activeRigModel = nil
+	if not rig.PrimaryPart then
+		ShowHint("Rig has no primary part.")
 		return false
 	end
 
-	-- We can load it, but check for potential issues...
-	clearRigLoadingMessages()
-	local warnCount = 0
-
-	if settings()["Rendering"].ExportMergeByMaterial then
-		addRigLoadingMessage("Warning: ExportMergeByMaterial should be disabled!")
-		addRigLoadingMessage("  note: Disable under Studio settings -> Rendering")
-		warnCount = warnCount + 1
+	if not rig.PrimaryPart.Anchored then
+		ShowHint("Rig primary part must be anchored.")
+		return false
 	end
 
-	if rigModel.Name:match("[^a-zA-Z0-9]") then
-		addRigLoadingMessage("Warning: Model name should only contain a-z A-Z 0-9 symbols!")
-		warnCount = warnCount + 1
+	ActiveRigModel = rig
+	ActiveAnimator = rig:FindFirstChildOfClass("Humanoid") or rig:FindFirstChildOfClass("AnimationController")
+	if not ActiveAnimator then
+		ShowHint("Rig has no Humanoid or AnimationController.")
+		ActiveRigModel = nil
+		return false
 	end
 
-	for _, inst in pairs(rigModel:GetDescendants()) do
-		if inst:IsA("Decal") then
-			addRigLoadingMessage("Warning: Decal instances sometimes cause issues during export!")
-			addRigLoadingMessage(("  note: at %s"):format(inst:GetFullName()))
-			warnCount = warnCount + 1
-		end
-		if inst:IsA("Texture") then
-			addRigLoadingMessage("Warning: Texture instances sometimes cause issues during export!")
-			addRigLoadingMessage(("  note: at %s"):format(inst:GetFullName()))
-			warnCount = warnCount + 1
-		end
-	end
+	ShowHint("Rig set to `" .. rig.Name .. "`.")
 
-	addRigLoadingMessage(("(%d warnings)"):format(warnCount))
+	CheckForPotentialIssues()
 
-	activeRig = Rig.new(rigModel)
-	showHint("Set active rig to %s.", rigModel.Name)
-	updateAnimationOptionsGui()
+	ActiveRig = Rig.new(rig)
+	ShowHint("Set rig to `" .. rig.Name .. "`.")
+
+
 	return true
 end
 
-local function loadAnimDataFromText(text)
-	local ok, err = pcall(loadAnim, text)
-	if ok then
-		loadRig()
-		showHint("Animation loaded.")
-	else
-		showHint("Failed to load animation: %s.", tostring(err))
-	end
-end
 
-local function deactivate()
-	dockGui.Enabled = false
-	stopAnimation()
-	game.Selection:Set({})
-	wait()
-	RS:Stop()
-	wait()
-	clearMetaParts()
-	active = false
-	activateButton:SetActive(false)
-	gui.Parent = nil
-	if rigSelectionEvent then
-		rigSelectionEvent:disconnect()
-		rigSelectionEvent = nil
-	end
-end
 
--- TODO
-local function createUI()
-	-- Rig loading warnings
-	do
-		local panelLoad = CollapsibleTitledSection.new("Core", "Rig loading warnings", true, true, false)
-		mainList:AddChild(panelLoad:GetSectionFrame())
 
-		local loadList = VerticallyScalingListFrame.new("Core")
-		loadList._uiListLayout.Padding = UDim.new(0, padding)
-		loadList:GetFrame().Parent = panelLoad:GetContentsFrame()
 
-		local corePadding = Instance.new("UIPadding", loadList:GetFrame())
-		corePadding.PaddingBottom = UDim.new(0, padding)
-		corePadding.PaddingLeft = UDim.new(0, padding)
-		corePadding.PaddingRight = UDim.new(0, padding)
-		corePadding.PaddingTop = UDim.new(0, padding)
 
-		local shownLabels = {}
 
-		addRigLoadingMessage = function(message)
-			local label = GuiUtilities.MakeStandardPropertyLabel(message)
-			label.Position = UDim2.new(0, 0, 0, 0)
-			label.Size = UDim2.new(1, 0, 0, 20)
-			label.AnchorPoint = Vector2.new()
-			loadList:AddChild(label)
 
-			shownLabels[label] = true
-		end
 
-		clearRigLoadingMessages = function(message)
-			for label in pairs(shownLabels) do
-				label:Destroy()
-			end
-			shownLabels = {}
-		end
-	end
 
-	-- Export/Import
-	do
-		local panelCore = CollapsibleTitledSection.new("Core", "Export/Import", true, true, false)
-		mainList:AddChild(panelCore:GetSectionFrame())
+-- UI stuff
+-- remember to trim this "code smell" later
+-- god styleguides are my bane
 
-		local coreList = VerticallyScalingListFrame.new("Core")
-		coreList._uiListLayout.Padding = UDim.new(0, padding)
-		coreList:GetFrame().Parent = panelCore:GetContentsFrame()
 
-		local corePadding = Instance.new("UIPadding", coreList:GetFrame())
-		corePadding.PaddingBottom = UDim.new(0, padding)
-		corePadding.PaddingLeft = UDim.new(0, padding)
-		corePadding.PaddingRight = UDim.new(0, padding)
-		corePadding.PaddingTop = UDim.new(0, padding)
 
-		local exportButton = CustomTextButton.new("Export", "Export rig")
-		exportButton:getButton().Size = buttonSize
-		coreList:AddChild(exportButton:getButton())
 
-		exportButton:getButton().MouseButton1Click:connect(function()
-			exportRig()
-			showHint("Done.")
-		end)
 
-		local cleanButton = CustomTextButton.new("Clean", "Clean meta parts")
-		cleanButton:getButton().Size = buttonSize
-		coreList:AddChild(cleanButton:getButton())
 
-		cleanButton:getButton().MouseButton1Click:connect(function()
-			clearMetaParts()
-			showHint("Done.")
-		end)
 
-		local importButton = CustomTextButton.new("Import", "Import animation")
-		importButton:getButton().Size = buttonSize
-		coreList:AddChild(importButton:getButton())
 
-		local importScriptText = "Paste the animation data below this line"
-		importButton:getButton().MouseButton1Click:connect(function()
-			clearMetaParts()
-			if importScript then
-				importScript:Destroy()
-			end
-			importScript = Instance.new("Script", game.Workspace)
-			importScript.Archivable = false
-			importScript.Source = "-- " .. importScriptText .. "\n"
-			plugin:OpenScript(importScript, 2)
-			importScript.Changed:connect(function(prop)
-				if prop == "Source" then
-					local animData =
-						select(3, string.find(importScript.Source, "^%-%- " .. importScriptText .. "\n(.*)$"))
-					importScript:Destroy()
-					importScript = nil
-					loadAnimDataFromText(animData)
-				end
-			end)
-		end)
-	end
 
-	-- Animation options
-	do
-		local panelAnim = CollapsibleTitledSection.new("Loaded", "Loaded animation", true, true, false)
-		mainList:AddChild(panelAnim:GetSectionFrame())
 
-		local animList = VerticallyScalingListFrame.new("Core")
-		animList._uiListLayout.Padding = UDim.new(0, padding)
-		animList:GetFrame().Parent = panelAnim:GetContentsFrame()
 
-		local corePadding = Instance.new("UIPadding", animList:GetFrame())
-		corePadding.PaddingBottom = UDim.new(0, padding)
-		corePadding.PaddingLeft = UDim.new(0, padding)
-		corePadding.PaddingRight = UDim.new(0, padding)
-		corePadding.PaddingTop = UDim.new(0, padding)
 
-		local exportButton = CustomTextButton.new("Upload", "Upload animation to Roblox")
-		exportButton:getButton().Size = buttonSize
-		animList:AddChild(exportButton:getButton())
 
-		exportButton:getButton().MouseButton1Click:connect(uploadAnimation)
+local function CollectKeyframeNames()
+	-- TODO: This block of function USES untrustable io, t calculation uses milisecond stuff
+	-- TODO: A short fix is implemented via a "MS" or "Frame" toggle which lets you choose between the two
+	-- TODO: MS, is default, and Frame is blender's frame number, which depends on the blender config
+	-- TODO: actually implement Frame, cba to modify Rig class
 
-		local restartButton = CustomTextButton.new("Restart", "Restart/reload animation")
-		restartButton:getButton().Size = buttonSize
-		animList:AddChild(restartButton:getButton())
+	local KeyframeNames = {}
+	for _, keyframeUi: Frame in KeyframeNamesContainer:GetChildren() do
+		if keyframeUi:IsA("TextLabel") and keyframeUi.Name == "KFNTemplate" then
+			-- reposition in list by changing the layout order
 
-		restartButton:getButton().MouseButton1Click:connect(loadRig)
 
-		local loopingButton = CustomTextButton.new("Looping", "Animation looping")
-		loopingButton:getButton().Size = buttonSize
-		animList:AddChild(loopingButton:getButton())
-
-		loopingButton:getButton().MouseButton1Click:connect(function()
-			activeRig.loop = not activeRig.loop
-			updateAnimationOptionsGui()
-			loadRig()
-		end)
-
-		local priorityButton = CustomTextButton.new("Priority", "Animation priority")
-		priorityButton:getButton().Size = buttonSize
-		animList:AddChild(priorityButton:getButton())
-
-		priorityButton:getButton().MouseButton1Click:connect(function()
-			local items = Enum.AnimationPriority:GetEnumItems()
-			for i = 1, #items do
-				if items[i] == activeRig.priority then
-					activeRig.priority = items[i % #items + 1]
-					break
+			local Time = tonumber(keyframeUi.TFrameime.Text)
+			-- anything with this Time already exists?
+			for _, keyframeName in ipairs(KeyframeNames) do
+				if keyframeName.t == Time then -- ???
+					Time = nil
+					return
 				end
 			end
-			updateAnimationOptionsGui()
-			loadRig()
-		end)
 
-		updateAnimationOptionsGui = function()
-			loopingButton._label.Text = ("Animation looping [%s]"):format(activeRig.loop and "Yes" or "No")
-			priorityButton._label.Text = ("Animation priority [%s]"):format(activeRig.priority.Name)
+			-- convert
+			if Time then
+				table.insert(KeyframeNames, {
+					t = Time,
+					name = keyframeUi.FrameName.Text,
+				})
+			else
+				keyframeUi.FrameTime.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+			end
 		end
-	end
-
-	-- Keyframe naming
-	do
-		local panelKfs = CollapsibleTitledSection.new("Names", "Named keyframes", true, true, false)
-		mainList:AddChild(panelKfs:GetSectionFrame())
-
-		local kfsList = VerticallyScalingListFrame.new("Core")
-		kfsList._uiListLayout.Padding = UDim.new(0, padding)
-		kfsList:GetFrame().Parent = panelKfs:GetContentsFrame()
-
-		local corePadding = Instance.new("UIPadding", kfsList:GetFrame())
-		corePadding.PaddingBottom = UDim.new(0, padding)
-		corePadding.PaddingLeft = UDim.new(0, padding)
-		corePadding.PaddingRight = UDim.new(0, padding)
-		corePadding.PaddingTop = UDim.new(0, padding)
-
-		local addButton = CustomTextButton.new("AddKF", "Add named keyframe")
-		addButton:getButton().Size = buttonSize
-		kfsList:AddChild(addButton:getButton())
-
-		local headerFrame = Instance.new("Frame")
-		headerFrame.Size = buttonSize
-		headerFrame.BackgroundTransparency = 1
-		kfsList:AddChild(headerFrame)
-
-		local header1 = GuiUtilities.MakeStandardPropertyLabel("Time (s)")
-		header1.Position = UDim2.new(0, 0, 0, 0)
-		header1.AnchorPoint = Vector2.new()
-		header1.Parent = headerFrame
-
-		local header2 = GuiUtilities.MakeStandardPropertyLabel("Keyframe name")
-		header2.Position = UDim2.new(0.3, 0, 0, 0)
-		header2.AnchorPoint = Vector2.new()
-		header2.Parent = headerFrame
-
-		local header3 = GuiUtilities.MakeStandardPropertyLabel("Erase")
-		header3.Position = UDim2.new(0.8, 0, 0, 0)
-		header3.AnchorPoint = Vector2.new()
-		header3.Parent = headerFrame
-
-		addButton:getButton().MouseButton1Click:connect(function()
-			local kfn = keyframeNameTemplate:Clone()
-			kfn.KfName.FocusLost:connect(recollectKeyframeNames)
-			kfn.KfTime.FocusLost:connect(recollectKeyframeNames)
-
-			local eraseButton = CustomTextButton.new("Erase", "Erase")
-			eraseButton:getButton().Size = UDim2.new(0.2, 0, 1, 0)
-			eraseButton:getButton().Position = UDim2.new(0.8, 0, 0, 0)
-			eraseButton:getButton().Parent = kfn
-			eraseButton:getButton().MouseButton1Click:connect(function()
-				kfn:Destroy()
-				recollectKeyframeNames()
-			end)
-
-			kfsList:AddChild(kfn)
-			recollectKeyframeNames()
-		end)
-
-		keyframeNamesContainer = kfsList:GetFrame()
-	end
-
-	-- Enable/disable bones
-	do
-		local panelWeight =
-			CollapsibleTitledSection.new("Weight", "Enable/disable joint for animation", true, true, false)
-		mainList:AddChild(panelWeight:GetSectionFrame())
-
-		local boneList = VerticallyScalingListFrame.new("Core")
-		boneList._uiListLayout.Padding = UDim.new(0, padding)
-		boneList:GetFrame().Parent = panelWeight:GetContentsFrame()
-
-		local corePadding = Instance.new("UIPadding", boneList:GetFrame())
-		corePadding.PaddingBottom = UDim.new(0, padding)
-		corePadding.PaddingLeft = UDim.new(0, padding)
-		corePadding.PaddingRight = UDim.new(0, padding)
-		corePadding.PaddingTop = UDim.new(0, padding)
-
-		boneWeightsList = boneList
 	end
 end
 
--- TODO
-local function addChildRigParts(parent, elemsLeft)
-	for itr, child in pairs(parent.children) do
-		local boneFrame = Instance.new("Frame")
-		boneFrame.Size = buttonSize
-		boneFrame.BackgroundTransparency = 1
-		boneFrame.Name = "BoneWeightFrame"
-		boneWeightsList:AddChild(boneFrame)
 
-		for i = 1, #elemsLeft do
-			local dirLbl = Instance.new("TextLabel")
-			dirLbl.Text = elemsLeft[i] >= 1 and (i == #elemsLeft and (elemsLeft[i] == 1 and "└" or "├") or "│")
-				or " "
-			dirLbl.TextSize = 26
-			dirLbl.BackgroundTransparency = 1
-			dirLbl.Position = UDim2.new(0, (i - 1) * 20 + (i == #elemsLeft and -1 or 0), 0, 0)
-			dirLbl.Size = UDim2.new(0, 20, 1, 0)
-			dirLbl.Parent = boneFrame
-		end
-		elemsLeft[#elemsLeft] = elemsLeft[#elemsLeft] - 1
 
-		local toggleButton = CustomTextButton.new("Toggle", ("%s %s"):format("[✔️]", child.part.Name))
-		toggleButton:getButton().Size = UDim2.new(1, -#elemsLeft * 20, 1, 0)
-		toggleButton:getButton().Position = UDim2.new(0, #elemsLeft * 20, 0, 0)
-		toggleButton:getButton().Parent = boneFrame
-		toggleButton:getButton().MouseButton1Click:connect(function()
-			child.enabled = not child.enabled
-			toggleButton._label.Text = ("%s %s"):format(child.enabled and "[✔️]" or "[❌]", child.part.Name)
-			loadRig()
-		end)
 
-		elemsLeft[#elemsLeft + 1] = #child.children
-		addChildRigParts(child, { unpack(elemsLeft) })
-		elemsLeft[#elemsLeft] = nil
+
+
+
+
+local function Deactivate()
+	DockGui.Enabled = false
+	StopAnimation()
+	Selection:Set({})
+	task.wait()
+
+	RunService:Stop()
+
+	task.wait()
+
+	ClearMetadataParts()
+	Active = false
+	ToolbarButton:SetActive(false)
+	InViewportGui.Parent = nil
+
+	if RigSelectionEvent then
+		RigSelectionEvent:Disconnect()
+		RigSelectionEvent = nil
 	end
 end
 
--- TODO
-local function rebuildBoneWeightsContainer()
-	for _, elem in pairs(boneWeightsList:GetFrame():GetChildren()) do
-		if elem.Name == "BoneWeightFrame" then
-			elem:Destroy()
-		end
-	end
-
-	local label = GuiUtilities.MakeStandardPropertyLabel(activeRig.root.part.Name)
-	label.Position = UDim2.new(0, 0, 0, 0)
-	label.Size = UDim2.new(1, 0, 0, 20)
-	label.AnchorPoint = Vector2.new()
-	label.Name = "BoneWeightFrame"
-	boneWeightsList:AddChild(label)
-
-	addChildRigParts(activeRig.root, { #activeRig.root.children })
-end
-
-local function init()
-	local toolbar = plugin:CreateToolbar("Blender Animations")
-	activateButton = toolbar:CreateButton(
-		"Blender Animations",
-		"Import and export Blender animations",
-		"http://www.roblox.com/asset/?id=4510352246"
+local function Startup()
+	local Toolbar = plugin:CreateToolbar(APP_NAME)
+	ToolbarButton = Toolbar:CreateButton(
+		"Open GUI",
+		"Opens the Utility Widget",
+		"rbxassetid://11087437445"
 	)
 
-	activateButton.Click:connect(function()
-		if active then
-			deactivate()
+	ToolbarButton.Click:Connect(function()
+		if Active then
+			Deactivate()
 			return
 		end
 
 		plugin:Activate(false)
-		activateButton:SetActive(true)
+		ToolbarButton:SetActive(true)
 		plugin:SelectRibbonTool(Enum.RibbonTool.Select, UDim2.new())
 
-		active = true
-		gui.Parent = game.CoreGui
-		activeRig = nil
+		Active = true
+		ActiveRig = nil
+		InViewportGui.Parent = PluginGuiService
+
 		plugin:Activate(true)
-		activateButton:SetActive(true)
-		game.Selection:Set({})
-		if rigSelectionEvent then
-			rigSelectionEvent:disconnect()
+		ToolbarButton:SetActive(true)
+		Selection:Set({})
+
+		if RigSelectionEvent then
+			RigSelectionEvent:Disconnect()
 		end
-		rigSelectionEvent = game.Selection.SelectionChanged:connect(function()
-			if game.Selection:Get()[1] and setRig(game.Selection:Get()[1]) then
-				rigSelectionEvent:disconnect()
-				rigSelectionEvent = nil
-				dockGui.Enabled = true
-				clearKeyframeNames()
-				rebuildBoneWeightsContainer()
-				wait()
-				RS:Run()
+		RigSelectionEvent = Selection.SelectionChanged:Connect(function()
+			local Selected = Selection:Get()[1]
+			if Selected and SetRig(Selected) then
+				if RigSelectionEvent then -- come on luau static analysis
+					RigSelectionEvent:Disconnect()
+				end
+				RigSelectionEvent = nil
+				local header = Header()
+				header.Text = "Animation"
+
+				DockGui.Enabled = true
 			end
 		end)
 
-		showHint("Select the rig model")
+		Print("Select a rig to begin.")
 	end)
 
-	createUI()
 
-	dockGui:GetPropertyChangedSignal("Enabled"):connect(function()
-		if dockGui.Enabled ~= dockGuiPreviousEnabled then
-			dockGuiPreviousEnabled = dockGui.Enabled
-			if not dockGui.Enabled and active then
-				deactivate()
+
+	DockGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if DockGui.Enabled ~= DockGuiPreviouslyEnabled then
+			DockGuiPreviouslyEnabled = DockGui.Enabled
+			if not DockGui.Enabled and Active then
+				Deactivate()
 			end
 		end
 	end)
 end
 
-init()
+Startup()

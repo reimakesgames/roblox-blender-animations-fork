@@ -4,8 +4,11 @@
     "$className": "DataModel",
 
     "ServerScriptService": {
-      "RobloxBlenderAnimationsFork": {
-        "$path": "src"
+      "RbxAnimations": {
+        "$className": "Model",
+        "RobloxBlenderAnimationsFork": {
+          "$path": "src"
+        }
       }
     }
   }
