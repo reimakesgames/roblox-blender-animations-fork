@@ -1,6 +1,6 @@
+local CoreGui = game:GetService("CoreGui")
 local HttpService = game:GetService("HttpService")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
-local PluginGuiService = game:GetService("PluginGuiService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
 
@@ -38,6 +38,8 @@ local WARNING_DECAL_HINT = "► ...%s"
 local WARNING_TEXTURE = "WARN: Texture found!\nTextures could cause issues with exporting."
 local WARNING_TEXTURE_HINT = "► ...%s"
 
+local IMPORT_TEXT = "Paste your animation data here"
+
 local HEADER_FONT = Font.fromEnum(Enum.Font.Ubuntu)
 HEADER_FONT.Weight = Enum.FontWeight.Bold
 local DEFAULT_FONT = Font.fromEnum(Enum.Font.Ubuntu)
@@ -52,6 +54,7 @@ local ActiveRig: Rig.Type?
 local ActiveRigModel: Model?
 local ActiveAnimator: Humanoid | AnimationController
 local ActiveAnimationTrack: AnimationTrack?
+local ImportScript: Script
 
 local ActionEditorExportedName: string?
 
@@ -73,6 +76,23 @@ local DockGui = plugin:CreateDockWidgetPluginGui(
 DockGui.Title = APP_NAME
 DockGui.Enabled = false
 local DockGuiPreviouslyEnabled = false
+
+local uiMainFrame: ScrollingFrame
+local uiWarningsHeader: TextLabel
+local uiWarningsList: Frame
+local uiExportHeader: TextLabel
+local uiExportList: Frame
+local uiExportRigButton: TextButton
+local uiCheckForIssuesButton: TextButton
+local uiClearMetadataPartsButton: TextButton
+
+local uiAnimationHeader: TextLabel
+local uiAnimationList: Frame
+local uiLoadAnimationButton: TextButton
+local uiExportAsKFSButton: TextButton
+local uiUploadKFSToRobloxButton: TextButton
+
+local uiNamedKeyframesHeader: TextLabel
 
 local function FastInstance(className, properties)
 	local instance = Instance.new(className)
@@ -114,34 +134,36 @@ local InViewportHint = FastInstance("TextLabel", {
 	Parent = InViewportGui,
 })
 
-local ScrollingFrame = FastInstance("ScrollingFrame", {
-	Name = "ScrollingFrame",
-	BackgroundColor3 = COLORS.BACKGROUND,
+local function MainFrame()
+	local ScrollingFrame = FastInstance("ScrollingFrame", {
+		Name = "ScrollingFrame",
+		BackgroundColor3 = COLORS.BACKGROUND,
 
-	Position = UDim2.new(0, 0, 0, 0),
-	Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0),
+		Size = UDim2.new(1, 0, 1, 0),
 
-	AutomaticCanvasSize = Enum.AutomaticSize.Y,
-	CanvasSize = UDim2.new(0, 0, 0, 0),
-	ScrollingDirection = Enum.ScrollingDirection.Y,
-	ScrollBarThickness = 2,
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ScrollBarThickness = 2,
+	})
+	FastInstance("UIListLayout", {
+		Name = "Separator",
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+		Parent = ScrollingFrame,
+	})
+	FastInstance("UIPadding", {
+		Name = "Padding",
+		PaddingLeft = UDim.new(0, 12),
+		PaddingRight = UDim.new(0, 12),
+		PaddingTop = UDim.new(0, 24),
+		PaddingBottom = UDim.new(0, 24),
+		Parent = ScrollingFrame,
+	})
 
-	Parent = DockGui,
-})
-local Separator = FastInstance("UIListLayout", {
-	Name = "Separator",
-	SortOrder = Enum.SortOrder.LayoutOrder,
-	Padding = UDim.new(0, 4),
-	Parent = ScrollingFrame,
-})
-local Padding = FastInstance("UIPadding", {
-	Name = "Padding",
-	PaddingLeft = UDim.new(0, 12),
-	PaddingRight = UDim.new(0, 12),
-	PaddingTop = UDim.new(0, 24),
-	PaddingBottom = UDim.new(0, 24),
-	Parent = ScrollingFrame,
-})
+	return ScrollingFrame
+end
 
 local function Header()
 	return FastInstance("TextLabel", {
@@ -175,7 +197,7 @@ local function TextButton()
 		TextColor3 = COLORS.WHITE,
 		FontFace = DEFAULT_FONT,
 		TextSize = 16,
-		TextXAlignment = Enum.TextXAlignment.Left,
+		TextXAlignment = Enum.TextXAlignment.Center,
 		TextYAlignment = Enum.TextYAlignment.Center,
 		AutoButtonColor = false,
 
@@ -186,8 +208,45 @@ local function TextButton()
 		Inst.BackgroundColor3 = COLORS.BUTTON_DEPRESSED
 	end)
 
+	Inst.MouseLeave:Connect(function()
+		Inst.BackgroundColor3 = COLORS.BUTTON
+	end)
+
+	FastInstance("UICorner", {
+		Name = "Corner",
+		CornerRadius = UDim.new(0, 4),
+		Parent = Inst,
+	})
+
 	return Inst
 end
+
+local function List()
+	local Frame: Frame = FastInstance("Frame", {
+		BackgroundTransparency = 1,
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Size = UDim2.new(1, 0, 0, 0),
+	})
+
+	FastInstance("UIListLayout", {
+		Name = "ListLayout",
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+		Parent = Frame,
+	})
+
+	return Frame
+end
+
+local function Separator()
+	return FastInstance("Frame", {
+		Name = "Separator",
+		BackgroundColor3 = COLORS.WHITE,
+		Size = UDim2.new(1, 0, 0, 1),
+	})
+end
+
+
 
 local function Print(...)
 	print(`[{APP_NAME} v{APP_VERSION}]`, ...)
@@ -240,7 +299,7 @@ local function LoadRig()
 		return
 	end
 
-	local KeyframeSequence = ActiveRig:ToKeyframeSequence()
+	local KeyframeSequence = ActiveRig:ToRobloxAnimation()
 	local Hash = KeyframeSequenceProvider:RegisterKeyframeSequence(KeyframeSequence)
 
 	local Animation = Instance.new("Animation")
@@ -333,7 +392,7 @@ local function GenerateMetadata(rigModelToExport)
 			-- uniqify the name
 			local Name = desc.Name
 			local RetryCount = 0
-			while UsedModelNames[Name] do
+			while UsedModelNames[desc.Name] do
 				RetryCount += 1
 				desc.Name = Name .. RetryCount
 			end
@@ -408,7 +467,7 @@ local function LoadAnimation(data)
 		disable_crc = true,
 		input = AnimationData,
 		output = function(streamByte)
-			UnpackedSequence[UnpackedSequenceIDx] = streamByte
+			UnpackedSequence[UnpackedSequenceIDx] = string.char(streamByte)
 			UnpackedSequenceIDx += 1
 		end
 	}) -- is this extreme nerd math that i don't understand? probably! who knows, im just remaking the plugin
@@ -424,13 +483,14 @@ end
 
 local function LoadAnimationDataFromText(data)
 	local success, result = pcall(LoadAnimation, data)
-	if not success then
+	if success then
+		LoadRig()
+		ShowHint("Loaded animation data.")
+		Print("Loaded animation data.")
+	else
 		ShowHint("Failed to load animation data.")
 		Print("Failed to load animation data.")
 		Print(result)
-	else
-		ShowHint("Loaded animation data.")
-		Print("Loaded animation data.")
 	end
 end
 
@@ -463,7 +523,7 @@ local function CheckForPotentialIssues()
 	end
 
 	table.insert(PotentialIssues, WARNING_COUNT:format(WarningCount))
-	if #PotentialIssues > 0 then
+	if #PotentialIssues > 1 then
 		for _, issue in ipairs(PotentialIssues) do
 			Print(issue)
 		end
@@ -501,8 +561,6 @@ local function SetRig(rig)
 		ActiveRigModel = nil
 		return false
 	end
-
-	ShowHint("Rig set to `" .. rig.Name .. "`.")
 
 	CheckForPotentialIssues()
 
@@ -576,8 +634,120 @@ end
 
 
 
+local function RebuildUI()
+	DockGui:ClearAllChildren()
+
+	uiMainFrame = MainFrame()
+	uiMainFrame.Parent = DockGui
+
+	uiWarningsHeader = Header()
+	uiWarningsHeader.Text = "Warnings"
+	uiWarningsHeader.LayoutOrder = 0
+	uiWarningsHeader.Parent = uiMainFrame
+
+	uiWarningsList = List()
+	uiWarningsList.LayoutOrder = 1
+	uiWarningsList.Parent = uiMainFrame
 
 
+
+
+
+	uiExportHeader = Header()
+	uiExportHeader.Text = "Export"
+	uiExportHeader.LayoutOrder = 10
+	uiExportHeader.Parent = uiMainFrame
+
+	uiExportList = List()
+	uiExportList.LayoutOrder = 11
+	uiExportList.Parent = uiMainFrame
+
+	uiExportRigButton = TextButton()
+	uiExportRigButton.Text = "Export Rig"
+	uiExportRigButton.LayoutOrder = 1
+	uiExportRigButton.Parent = uiExportList
+	uiExportRigButton.MouseButton1Click:Connect(ExportRig)
+
+	uiCheckForIssuesButton = TextButton()
+	uiCheckForIssuesButton.Text = "Check for Issues"
+	uiCheckForIssuesButton.LayoutOrder = 2
+	uiCheckForIssuesButton.Parent = uiExportList
+	uiCheckForIssuesButton.MouseButton1Click:Connect(function()
+		CheckForPotentialIssues()
+		uiWarningsList:ClearAllChildren()
+		for i, issue in ipairs(PotentialIssues) do
+			local uiIssue = TextLabel()
+			uiIssue.Text = issue
+			uiIssue.LayoutOrder = i
+			uiIssue.Parent = uiWarningsList
+		end
+	end)
+
+	uiClearMetadataPartsButton = TextButton()
+	uiClearMetadataPartsButton.Text = "Clear Metadata Parts"
+	uiClearMetadataPartsButton.LayoutOrder = 3
+	uiClearMetadataPartsButton.Parent = uiExportList
+	uiClearMetadataPartsButton.MouseButton1Click:Connect(ClearMetadataParts)
+
+	uiAnimationHeader = Header()
+	uiAnimationHeader.Text = "Animation"
+	uiAnimationHeader.LayoutOrder = 20
+	uiAnimationHeader.Parent = uiMainFrame
+
+	uiAnimationList = List()
+	uiAnimationList.LayoutOrder = 21
+	uiAnimationList.Parent = uiMainFrame
+
+	uiLoadAnimationButton = TextButton()
+	uiLoadAnimationButton.Text = "Load Animation"
+	uiLoadAnimationButton.LayoutOrder = 1
+	uiLoadAnimationButton.Parent = uiAnimationList
+	uiLoadAnimationButton.MouseButton1Click:Connect(function()
+		ClearMetadataParts()
+		if ImportScript then
+			ImportScript:Destroy()
+		end
+		ImportScript = Instance.new("Script", game.Workspace)
+		ImportScript.Archivable = false
+		ImportScript.Source = "-- " .. IMPORT_TEXT .. "\n"
+		plugin:OpenScript(ImportScript, 2)
+		ImportScript.Changed:Connect(function(property)
+			if property == "Source" then
+				local animData =
+					select(3, string.find(ImportScript.Source, "^%-%- " .. IMPORT_TEXT .. "\n(.*)$"))
+				ImportScript:Destroy()
+				ImportScript = nil :: any
+				LoadAnimationDataFromText(animData)
+			end
+		end)
+	end)
+
+	uiExportAsKFSButton = TextButton()
+	uiExportAsKFSButton.Text = "Export KeyframeSequence"
+	uiExportAsKFSButton.LayoutOrder = 2
+	uiExportAsKFSButton.Parent = uiAnimationList
+	uiExportAsKFSButton.MouseButton1Click:Connect(function()
+		if not ActiveRig then
+			ShowHint("No rig selected.")
+			return
+		end
+
+		ExportAnimation()
+	end)
+
+	uiUploadKFSToRobloxButton = TextButton()
+	uiUploadKFSToRobloxButton.Text = "Upload to Roblox"
+	uiUploadKFSToRobloxButton.LayoutOrder = 3
+	uiUploadKFSToRobloxButton.Parent = uiAnimationList
+	uiUploadKFSToRobloxButton.MouseButton1Click:Connect(function()
+		if not ActiveRig then
+			ShowHint("No rig selected.")
+			return
+		end
+
+		UploadAnimation()
+	end)
+end
 
 local function Deactivate()
 	DockGui.Enabled = false
@@ -608,6 +778,8 @@ local function Startup()
 		"rbxassetid://11087437445"
 	)
 
+	RebuildUI()
+
 	ToolbarButton.Click:Connect(function()
 		if Active then
 			Deactivate()
@@ -620,7 +792,7 @@ local function Startup()
 
 		Active = true
 		ActiveRig = nil
-		InViewportGui.Parent = PluginGuiService
+		InViewportGui.Parent = CoreGui
 
 		plugin:Activate(true)
 		ToolbarButton:SetActive(true)
@@ -636,8 +808,16 @@ local function Startup()
 					RigSelectionEvent:Disconnect()
 				end
 				RigSelectionEvent = nil
-				local header = Header()
-				header.Text = "Animation"
+
+				RebuildUI()
+				CheckForPotentialIssues()
+				uiWarningsList:ClearAllChildren()
+				for i, issue in ipairs(PotentialIssues) do
+					local uiIssue = TextLabel()
+					uiIssue.Text = issue
+					uiIssue.LayoutOrder = i
+					uiIssue.Parent = uiWarningsList
+				end
 
 				DockGui.Enabled = true
 			end
