@@ -238,6 +238,91 @@ local function List()
 	return Frame
 end
 
+local function DropdownSelect(selections, callbacks)
+	local Selecting = false
+
+	local TextButton: TextButton = FastInstance("TextButton", {
+		BackgroundColor3 = COLORS.ACCENTED,
+		TextColor3 = COLORS.TEXT,
+		FontFace = DEFAULT_FONT,
+		TextSize = 16,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		AutoButtonColor = false,
+
+		Size = UDim2.new(1, 0, 0, 32),
+	})
+
+	local DropdownArrow: ImageLabel = FastInstance("ImageLabel", {
+		BackgroundTransparency = 1,
+		Image = "rbxassetid://4862800922",
+		ImageColor3 = COLORS.TEXT,
+		ImageTransparency = 0.5,
+		ScaleType = Enum.ScaleType.Fit,
+		Size = UDim2.new(0, 16, 0, 16),
+		Position = UDim2.new(1, -16, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Rotation = -90,
+		Parent = TextButton,
+	})
+
+	local DropdownScrollingFrame: Frame = FastInstance("ScrollingFrame", {
+		BackgroundColor3 = COLORS.ACCENTED,
+		Visible = false,
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Size = UDim2.new(1, 0, 0, 0),
+		ScrollBarThickness = 2,
+		Position = UDim2.new(0, 0, 1, 0),
+		Parent = TextButton,
+	})
+	FastInstance("UISizeConstraint", {
+		Name = "SizeConstraint",
+		MaxSize = Vector2.new(1000, 120),
+		Parent = DropdownScrollingFrame,
+	})
+	FastInstance("UIListLayout", {
+		Name = "ListLayout",
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 0),
+		Parent = DropdownScrollingFrame,
+	})
+
+	TextButton.MouseButton1Click:Connect(function()
+		Selecting = not Selecting
+		DropdownScrollingFrame.Visible = Selecting
+		DropdownArrow.Rotation = Selecting and -180 or -90
+	end)
+
+	local function UpdateSelection(i)
+		TextButton.Text = selections[i]
+		Selecting = false
+		DropdownScrollingFrame.Visible = false
+		DropdownArrow.Rotation = -90
+	end
+
+	for i, item in ipairs(selections) do
+		local ItemButton: TextButton = FastInstance("TextButton", {
+			BackgroundColor3 = COLORS.ACCENTED,
+			TextColor3 = COLORS.TEXT,
+			FontFace = DEFAULT_FONT,
+			TextSize = 16,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			AutoButtonColor = false,
+
+			Size = UDim2.new(1, 0, 0, 24),
+			Text = item,
+			Parent = DropdownScrollingFrame,
+		})
+		ItemButton.MouseButton1Click:Connect(function()
+			UpdateSelection(i)
+			callbacks[i]()
+		end)
+	end
+
+	return TextButton
+end
+
 local function Separator()
 	return FastInstance("Frame", {
 		Name = "Separator",
@@ -747,6 +832,17 @@ local function RebuildUI()
 
 		UploadAnimation()
 	end)
+
+	DropdownSelect({
+		"Fish", "Fish2"
+	}, {
+		function()
+			print("Fish")
+		end,
+		function()
+			print("Fish2")
+		end
+	}).Parent = uiAnimationList
 end
 
 local function Deactivate()
